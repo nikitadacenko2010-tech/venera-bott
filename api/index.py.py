@@ -17,10 +17,6 @@ from aiogram.types import (
     FSInputFile
 )
 from aiogram.filters import CommandStart, Command
-from aiogram.exceptions import TelegramBadRequest
-
-# Импорт для работы веб-сервера на Vercel
-from aiohttp import web
 
 # ===== ГЛУБОКАЯ НАСТРОЙКА ЛОГИРОВАНИЯ =====
 logging.basicConfig(
@@ -30,6 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== ОСНОВНЫЕ ПАРАМЕТРЫ БОТА =====
+# На Vercel токен лучше брать из переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8304741625:AAEFyvmdL_tsfGsIH1VxruyBptyvqcNErt0")
 
 bot = Bot(token=BOT_TOKEN)
@@ -208,19 +205,15 @@ TEXT_REFERRAL_MENU = (
 
 # ===== ФУНКЦИИ ИНТЕРФЕЙСА =====
 def find_trustify_photo():
-    downloads_path = str(Path.home() / "Downloads")
+    # На Vercel файловая система ограничена, но попробуем найти в папке api
     current_path = os.getcwd()
-    target_filename = "photo_6235329028533456789_x.jpg"
-    search_locations = [current_path, downloads_path, os.path.join(current_path, "api")]
-    for directory in search_locations:
-        full_path = os.path.join(directory, target_filename)
-        if os.path.exists(full_path):
-            return full_path
-    patterns = ["photo_6235329028533456789*.jpg", "photo_6235329028533456789*.jpeg"]
-    for directory in search_locations:
-        for pattern in patterns:
-            files = glob.glob(os.path.join(directory, pattern))
-            if files: return files[0]
+    target_filename = "venera.jpg"
+    # Ищем в текущей папке или в /api/
+    paths = [current_path, os.path.join(current_path, "api")]
+    for p in paths:
+        full = os.path.join(p, target_filename)
+        if os.path.exists(full):
+            return full
     return None
 
 async def send_interface_view(chat_id, user_id, text, keyboard=None, is_callback=False, callback_obj=None):
@@ -557,7 +550,6 @@ async def cb_manager(callback: CallbackQuery):
 async def text_handler(message: Message):
     user_id = message.from_user.id
     state = user_fsm_states.get(user_id)
-    if not state: return
     
     if state == "admin_price_user":
         try:
@@ -580,9 +572,7 @@ async def text_handler(message: Message):
             await message.answer("❌ Ошибка. Введите число.")
         return
 
-    try: await message.delete()
-    except Exception: pass
-
+    # Логика FSM для сделок
     if state == "state_reqs":
         temp_data[user_id]["reqs"] = message.text
         user_fsm_states[user_id] = "state_amt"
@@ -613,18 +603,24 @@ async def text_handler(message: Message):
         thanks = "✅ **Благодарим за ваше обращение!**\n\nНаши модераторы рассмотрят его в течение 24 часов."
         await send_interface_view(message.chat.id, user_id, thanks, get_back_to_main_kb())
 
-# ===== ЧАСТЬ ДЛЯ VERCEL (WEBHOOK) =====
-async def handle_webhook(request):
-    url = str(request.url)
-    index = url.rfind('/')
-    token = url[index + 1:]
-    
-    if token == BOT_TOKEN:
-        update = types.Update.model_validate(await request.json(), context={"bot": bot})
-        await dp.feed_update(bot, update)
-        return web.Response()
-    else:
-        return web.Response(status=403)
+# ===== АДАПТАЦИЯ ДЛЯ VERCEL (WEBHOOK) =====
+async def handler(request):
+    if request.method == "POST":
+        try:
+            data = await request.json()
+            update = types.Update.model_validate(data, context={"bot": bot})
+            await dp.feed_update(bot, update)
+        except Exception as e:
+            logger.error(f"Error handling update: {e}")
+    return {"statusCode": 200, "body": "ok"}
 
-app = web.Application()
-app.router.add_post(f'/{BOT_TOKEN}', handle_webhook)
+# Блок для локального запуска
+async def run():
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен")
